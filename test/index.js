@@ -17,3 +17,8 @@ var knex = require('knex')(dbCreds)
 var twitterStreamBase = new TwitterStreamBase(twitterConfig, knex);
 
 twitterStreamBase.track('nyc');
+
+twitterStreamBase.get('nyc', null, null, function(err, results){
+    if( err ){ throw(err); }
+    else{ console.log(results); }
+});

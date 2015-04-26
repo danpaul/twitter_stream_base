@@ -3,7 +3,8 @@ var Twitter = require('twitter');
 var SCHEMA = function(table){
     table.increments()
     table.string('tracking').index()
-    table.text('tweet')
+    table.integer('created').index()
+    table.json('tweet')
 }
 
 var DEFAULT_TABLE_NAME = 'tweets';
@@ -38,6 +39,25 @@ module.exports = function(twitterConfig, knexObject, options){
             .catch(function(err){ throw(err); })
     }
 
+    // start and endIn are unix timestamps or null
+    // start must be set if endIn is used
+    self.get = function(tracking, start, end, callback){
+
+        var statement = self.knex(self.tableName)
+            .where('tracking', '=', tracking)
+
+        if( start !== null ){
+            statement.andWhere('created', '>', start)
+            if( end !== null ){
+                statement.andWhere('created', '<', end)
+            }
+        }
+
+        statement
+            .then(function(rows){ callback(null, rows) })
+            .catch(callback)
+    }
+
     self.track = function(toTrack){
         self.twitterClient.stream('statuses/filter',
                                   {track: toTrack}, function(stream) {
@@ -52,9 +72,13 @@ module.exports = function(twitterConfig, knexObject, options){
         var tracking = trackingIn;
 
         return function(tweet){
-
+            var timeStamp = Date.now() / 1000;
             self.knex(self.tableName)
-                .insert({'tracking': tracking, 'tweet': JSON.stringify(tweet) })
+                .insert({
+                    'tracking': tracking,
+                    'tweet': JSON.stringify(tweet),
+                    created: timeStamp
+                })
                 .then(function(){})
                 .error(function(err){ console.log(err); })
         }
