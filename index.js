@@ -1,13 +1,17 @@
+var async = require('async');
 var Twitter = require('twitter');
 
 var SCHEMA = function(table){
     table.increments()
     table.string('tracking').index()
     table.integer('created').index()
+    table.boolean('parsed').index().default(false)
     table.json('tweet')
 }
 
 var DEFAULT_TABLE_NAME = 'tweets';
+var DEFAULT_PROCESS_BATCH_SIZE = 1000;
+var PARALLEL_LIMIT = 10;
 
 // twitter config follows: https://www.npmjs.com/package/twitter
 // knexObject is an initialized knex object
@@ -20,6 +24,8 @@ module.exports = function(twitterConfig, knexObject, options){
         self.knex = knexObject;
         self.tableName = options.tableName ?
             options.tableName : DEFAULT_TABLE_NAME;
+        self.proccessBatchSize = options.proccessBatchSize ?
+            options.proccessBatchSize : DEFAULT_PROCESS_BATCH_SIZE;
         self.initDB();
     }
 
@@ -53,35 +59,104 @@ module.exports = function(twitterConfig, knexObject, options){
             }
         }
 
+        statement.andWhere('parsed', '=', true)
+
         statement
             .then(function(rows){ callback(null, rows) })
             .catch(callback)
     }
 
+    // toTrack is an array strings to track
     self.track = function(toTrack){
-        self.twitterClient.stream('statuses/filter',
-                                  {track: toTrack}, function(stream) {
 
+        var trackingString = '';
+
+        toTrack.forEach(function(trackedItem){
+            trackingString += trackedItem + ',';
+        })
+
+        self.twitterClient.stream('statuses/filter',
+                                  {track: trackingString}, function(stream) {
 
             stream.on('data', new self.newTweet(toTrack));
             stream.on('error', self.streamError);
         });
     }
 
-    self.newTweet = function(trackingIn){
-        var tracking = trackingIn;
-
+    self.newTweet = function(trackingArray){
         return function(tweet){
             var timeStamp = Date.now() / 1000;
             self.knex(self.tableName)
                 .insert({
-                    'tracking': tracking,
+                    'tracking': JSON.stringify(trackingArray),
                     'tweet': JSON.stringify(tweet),
                     created: timeStamp
                 })
                 .then(function(){})
                 .error(function(err){ console.log(err); })
         }
+    }
+
+    self.processTweets = function(callbackIn){
+        var reachedEnd = false;
+
+        async.whilst(
+            function(){ return !reachedEnd; },
+            function(callback){
+                self.knex(self.tableName)
+                    .where('parsed', '=', false)
+                    .orderBy('created', 'asc')
+                    .limit(self.proccessBatchSize)
+                    .then(function(rows){
+                        if( rows.length === 0 ){
+                            reachedEnd = true;
+                            callback();
+                        } else {
+                            self.processTweetGroup(rows, callback)
+                        }
+                    })
+                    .catch(callback)
+            },
+            callbackIn)
+    }
+
+    self.processTweetGroup = function(tweets, callbackIn){
+        async.eachLimit(tweets, PARALLEL_LIMIT, function(tweetData, callback){
+            var trackArray = JSON.parse(tweetData.tracking);
+
+            async.eachSeries(trackArray, function(track, callbackB){
+                if( tweetData.tweet.toLowerCase().indexOf(track.toLowerCase())
+                        !== -1 ){
+
+                    self.saveTweet(track, tweetData, callbackB);
+                } else {
+                    callbackB();
+                }
+            }, function(err){
+                if( err ){
+                    callback(err);
+                    return;
+                }
+                // delete row after processing
+                self.knex(self.tableName)
+                    .where('id', '=', tweetData.id)
+                    .delete()
+                    .then(function(){ callback(); })
+                    .catch(callback)
+            })
+        }, callbackIn)
+    }
+
+    self.saveTweet = function(tracking, tweetData, callbackIn){
+        self.knex(self.tableName)
+            .insert({
+                'tracking': tracking,
+                'tweet': tweetData.tweet,
+                created: tweetData.created,
+                parsed: true
+            })
+            .then(function(){ callbackIn(); })
+            .error(callbackIn)
     }
 
     self.streamError = function(error){

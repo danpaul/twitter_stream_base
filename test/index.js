@@ -16,9 +16,15 @@ var knex = require('knex')(dbCreds)
 
 var twitterStreamBase = new TwitterStreamBase(twitterConfig, knex);
 
-twitterStreamBase.track('nyc');
+// twitterStreamBase.track(['nyc', 'doggies']);
 
-twitterStreamBase.get('nyc', null, null, function(err, results){
+twitterStreamBase.processTweets(function(err){
     if( err ){ throw(err); }
-    else{ console.log(results); }
-});
+    else{ console.log('Success processing tweets.'); }
+})
+
+// twitterStreamBase.get('nyc', null, null, function(err, results){
+//     if( err ){ throw(err); }
+//     else{ console.log(results); }
+// });
+

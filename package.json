@@ -9,6 +9,7 @@
   "author": "Dan Breczinski <pt2323@gmail.com> (http://dpb.me/)",
   "license": "ISC",
   "dependencies": {
+    "async": "^0.9.0",
     "knex": "^0.7.6",
     "mysql": "^2.6.2",
     "twitter": "^1.2.5"
