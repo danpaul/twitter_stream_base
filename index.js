@@ -3,9 +3,10 @@ var Twitter = require('twitter');
 
 var SCHEMA = function(table){
     table.increments()
-    table.string('tracking').index()
+    table.string('tracking').index().default("")
     table.integer('created').index()
     table.boolean('parsed').index().default(false)
+    table.text('trackingArray').default("")
     table.json('tweet')
 }
 
@@ -88,7 +89,8 @@ module.exports = function(twitterConfig, knexObject, options){
             var timeStamp = Date.now() / 1000;
             self.knex(self.tableName)
                 .insert({
-                    'tracking': JSON.stringify(trackingArray),
+                    // 'tracking': JSON.stringify(trackingArray),
+                    trackingArray: JSON.stringify(trackingArray),
                     'tweet': JSON.stringify(tweet),
                     created: timeStamp
                 })
@@ -122,7 +124,7 @@ module.exports = function(twitterConfig, knexObject, options){
 
     self.processTweetGroup = function(tweets, callbackIn){
         async.eachLimit(tweets, PARALLEL_LIMIT, function(tweetData, callback){
-            var trackArray = JSON.parse(tweetData.tracking);
+            var trackArray = JSON.parse(tweetData.trackingArray);
 
             async.eachSeries(trackArray, function(track, callbackB){
                 if( tweetData.tweet.toLowerCase().indexOf(track.toLowerCase())
@@ -152,6 +154,7 @@ module.exports = function(twitterConfig, knexObject, options){
             .insert({
                 'tracking': tracking,
                 'tweet': tweetData.tweet,
+                'trackingArray': '',
                 created: tweetData.created,
                 parsed: true
             })
