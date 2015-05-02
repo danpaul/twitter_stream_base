@@ -1,49 +1,160 @@
+var _ = require('underscore');
 var async = require('async');
 var Twitter = require('twitter');
+var r = require('rethinkdb');
 
-var SCHEMA = function(table){
-    table.increments()
-    table.string('tracking').index().default("")
-    table.integer('created').index()
-    table.boolean('parsed').index().default(false)
-    table.text('trackingArray').default("")
-    table.json('tweet')
-}
-
+var DEFAULT_DB_NAME = 'tweet_base';
 var DEFAULT_TABLE_NAME = 'tweets';
 var DEFAULT_PROCESS_BATCH_SIZE = 1000;
 var PARALLEL_LIMIT = 10;
+var WATCH_INTERVAL = 1000;
+
+var ERROR_INIT = 'twitter_steram_base requires host and port'
 
 // twitter config follows: https://www.npmjs.com/package/twitter
-// knexObject is an initialized knex object
-module.exports = function(twitterConfig, knexObject, options){
+// options must include rethinkdb config: host, port
+// options may include databaseName and tableName
+// callback gets called after intialization
+module.exports = function(twitterConfig, options, callbackIn){
     var self = this;
+    self.tweetQue = [];
 
     self.init = function(){
-        var options = options ? options : {};
-        self.twitterClient = new Twitter(twitterConfig);
-        self.knex = knexObject;
+
+        if( !options.host || !options.port ){ throw ERROR_INIT; }
+
+        self.databaseName = options.databaseName ?
+            options.databaseName : DEFAULT_DB_NAME;
         self.tableName = options.tableName ?
             options.tableName : DEFAULT_TABLE_NAME;
-        self.proccessBatchSize = options.proccessBatchSize ?
-            options.proccessBatchSize : DEFAULT_PROCESS_BATCH_SIZE;
-        self.initDB();
+
+        self.twitterClient = new Twitter(twitterConfig);
+        self.watchQue();
+
+        async.series([
+            function(callback){
+                r.connect({host: options.host, port: options.port},
+                          function(err, conn){
+
+                    if( err ){ throw err; }
+                    self.connection = conn;
+                    callback();
+                });
+            },
+
+            // check if db exists, create it if not
+            function(callback){
+
+                r.dbList().run(self.connection, function(err, dbs){
+                    if( err ){
+                        callback(err);
+                        return;
+                    }
+
+                    if( _.contains(dbs, self.databaseName) ){
+                        callback();
+                        return;
+                    }
+
+                    r.dbCreate(self.databaseName).run(self.connection,
+                                                      function(err){
+                        if( err ){ callback(err); }
+                        else{ callback(); }
+                    });
+                })
+            },
+
+            // check if table exists, create it if not
+            function(callback){
+                r.db(self.databaseName)
+                    .tableList()
+                    .run(self.connection, function(err, tables){
+                        if( err ){
+                            callback(err);
+                            return;
+                        }
+                        if( _.contains(tables, self.tableName) ){
+                            callback();
+                            return;
+                        }
+                        r.db(self.databaseName)
+                            .tableCreate(self.tableName)
+                            .run(self.connection, function(err){
+                                if( err ){
+                                    callback(err);
+                                    return;
+                                }
+                                callback();
+                            });
+                })
+            }
+        ], callbackIn)
     }
 
-    self.initDB = function(){
+    // toTrack is an array strings to track
+    self.track = function(toTrack){
 
-        // check if table exists
-        self.knex.schema.hasTable(self.tableName)
-            .then(function(exists) {
-                if( !exists ){
-                    // create the table
-                    self.knex.schema.createTable(self.tableName, SCHEMA)
-                        .then(function(){})
-                        .catch(function(err){ throw(err); })
+        var trackingString = '';
+        self.trackTerms = toTrack;
 
+        toTrack.forEach(function(trackedItem){
+            trackingString += trackedItem + ',';
+        })
+
+        self.twitterClient.stream('statuses/filter',
+                                  {track: trackingString}, function(stream) {
+
+            stream.on('data', new self.newTweet(toTrack));
+            stream.on('error', self.streamError);
+        });
+    }
+
+    self.watchQue = function(){
+
+        setInterval(function(){
+            if( self.tweetQue.length === 0 ){ return; }
+// console.log(self.tweetQue.length)
+            var tweets = self.tweetQue;
+            self.tweetQue = [];
+            tweets = self.cleanTweets(tweets);
+            r.db(self.databaseName).table(self.tableName).insert(tweets)
+                .run(self.connection, function(err){
+                    if( err ){ console.log(err); }
+                })
+
+
+        }, WATCH_INTERVAL)
+    }
+
+    self.cleanTweets = function(tweets, searchTerms){
+        var cleanTweets = [];
+        _.each(tweets, function(tweet){
+            if( tweet.id ){
+                var master = {
+                    twitter_id: tweet.id,
+                    timestamp_ms: parseInt(tweet.timestamp_ms),
+                    text: tweet.text,
+                    user_id: tweet.user.id,
+                    user_followers: tweet.user.followers_count
                 }
-            })
-            .catch(function(err){ throw(err); })
+
+                _.each(self.trackTerms, function(trackTerm){
+                    if( master.text.toLowerCase()
+                              .indexOf(trackTerm.toLowerCase()) !== -1 ){
+                        var cleanTweet = _.clone(master);
+                        cleanTweet.trackTerm = trackTerm;
+                        cleanTweets.push(cleanTweet);
+                    }
+                })                
+            }
+        })
+        return cleanTweets;
+    }
+
+    self.newTweet = function(trackingArray){
+        return function(tweet){
+            self.tweetQue.push(tweet);
+        }
     }
 
     // start and endIn are unix timestamps or null
@@ -65,38 +176,6 @@ module.exports = function(twitterConfig, knexObject, options){
         statement
             .then(function(rows){ callback(null, rows) })
             .catch(callback)
-    }
-
-    // toTrack is an array strings to track
-    self.track = function(toTrack){
-
-        var trackingString = '';
-
-        toTrack.forEach(function(trackedItem){
-            trackingString += trackedItem + ',';
-        })
-
-        self.twitterClient.stream('statuses/filter',
-                                  {track: trackingString}, function(stream) {
-
-            stream.on('data', new self.newTweet(toTrack));
-            stream.on('error', self.streamError);
-        });
-    }
-
-    self.newTweet = function(trackingArray){
-        return function(tweet){
-            var timeStamp = Date.now() / 1000;
-            self.knex(self.tableName)
-                .insert({
-                    // 'tracking': JSON.stringify(trackingArray),
-                    trackingArray: JSON.stringify(trackingArray),
-                    'tweet': JSON.stringify(tweet),
-                    created: timeStamp
-                })
-                .then(function(){})
-                .error(function(err){ console.log(err); })
-        }
     }
 
     self.processTweets = function(callbackIn){
