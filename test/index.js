@@ -18,19 +18,18 @@ var dbCreds = {
 
 var tBase = new TwitterStreamBase(twitterConfig, dbCred, function(err){
     if( err ){ throw err; }
-    // tBase.track(['nyc']);
-    tBase.track(['love', 'peace', 'TheyreTheOne', 'win', 'one', 'nyc', 'la', 'index', 'javascript', 'dad', 'mom', 'god', 'dog', 'cat', 'food', 'hate']);
-    // tBase.track(['love']);
+
+    // tBase.track(['love', 'peace', 'TheyreTheOne', 'win', 'one', 'nyc', 'la', 'index', 'javascript', 'dad', 'mom', 'god', 'dog', 'cat', 'food', 'hate', 'the']);
+
+    // tBase.get('nyc', null, null, function(err, results){
+    //     if( err ){ throw(err); }
+    //     else{ console.log(results); }
+    // });
+
+    // tBase.get('nyc', 1430655114733, 1430655135633, function(err, results){
+    //     if( err ){ throw(err); }
+    //     else{ console.log(results); }
+    // });
+
 });
-
-
-// twitterStreamBase.processTweets(function(err){
-//     if( err ){ throw(err); }
-//     else{ console.log('Success processing tweets.'); }
-// })
-
-// twitterStreamBase.get('nyc', null, null, function(err, results){
-//     if( err ){ throw(err); }
-//     else{ console.log(results); }
-// });
 

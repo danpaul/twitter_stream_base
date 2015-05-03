@@ -5,7 +5,6 @@ var r = require('rethinkdb');
 
 var DEFAULT_DB_NAME = 'tweet_base';
 var DEFAULT_TABLE_NAME = 'tweets';
-var DEFAULT_PROCESS_BATCH_SIZE = 1000;
 var PARALLEL_LIMIT = 10;
 var WATCH_INTERVAL = 1000;
 
@@ -31,6 +30,7 @@ module.exports = function(twitterConfig, options, callbackIn){
         self.twitterClient = new Twitter(twitterConfig);
         self.watchQue();
 
+        var createIndexes = false;
         async.series([
             function(callback){
                 r.connect({host: options.host, port: options.port},
@@ -84,9 +84,38 @@ module.exports = function(twitterConfig, options, callbackIn){
                                     callback(err);
                                     return;
                                 }
+                                createIndexes = true;
                                 callback();
                             });
                 })
+            },
+
+            // create indexes if table was just intitialized
+            function(callback){
+                if( !createIndexes ){
+                    callback();
+                    return;
+                }
+                r.db(self.databaseName)
+                    .table(self.tableName)
+                    .indexCreate('timestamp_ms')
+                    .run(self.connection, function(err){
+                        if( err ){
+                            callback(err);
+                            return
+                        }
+
+                        r.db(self.databaseName)
+                            .table(self.tableName)
+                            .indexCreate('trackTerm')
+                            .run(self.connection, function(err){
+                                if( err ){
+                                    callback(err);
+                                    return
+                                }
+                                callback()
+                            })
+                    })
             }
         ], callbackIn)
     }
@@ -113,7 +142,6 @@ module.exports = function(twitterConfig, options, callbackIn){
 
         setInterval(function(){
             if( self.tweetQue.length === 0 ){ return; }
-// console.log(self.tweetQue.length)
             var tweets = self.tweetQue;
             self.tweetQue = [];
             tweets = self.cleanTweets(tweets);
@@ -157,88 +185,24 @@ module.exports = function(twitterConfig, options, callbackIn){
         }
     }
 
-    // start and endIn are unix timestamps or null
+    // start and endIn are millisecond timestamps or null
     // start must be set if endIn is used
     self.get = function(tracking, start, end, callback){
 
-        var statement = self.knex(self.tableName)
-            .where('tracking', '=', tracking)
-
         if( start !== null ){
-            statement.andWhere('created', '>', start)
-            if( end !== null ){
-                statement.andWhere('created', '<', end)
-            }
+            r.db(self.databaseName)
+                .table(self.tableName)
+                .between(start, end, {index: 'timestamp_ms'})
+                .filter({'trackTerm': tracking})
+                .coerceTo('array')
+                .run(self.connection, callback);
+        } else {
+            r.db(self.databaseName)
+                .table(self.tableName)
+                .getAll(tracking, {index:'trackTerm'})
+                .coerceTo('array')
+                .run(self.connection, callback);
         }
-
-        statement.andWhere('parsed', '=', true)
-
-        statement
-            .then(function(rows){ callback(null, rows) })
-            .catch(callback)
-    }
-
-    self.processTweets = function(callbackIn){
-        var reachedEnd = false;
-
-        async.whilst(
-            function(){ return !reachedEnd; },
-            function(callback){
-                self.knex(self.tableName)
-                    .where('parsed', '=', false)
-                    .orderBy('created', 'asc')
-                    .limit(self.proccessBatchSize)
-                    .then(function(rows){
-                        if( rows.length === 0 ){
-                            reachedEnd = true;
-                            callback();
-                        } else {
-                            self.processTweetGroup(rows, callback)
-                        }
-                    })
-                    .catch(callback)
-            },
-            callbackIn)
-    }
-
-    self.processTweetGroup = function(tweets, callbackIn){
-        async.eachLimit(tweets, PARALLEL_LIMIT, function(tweetData, callback){
-            var trackArray = JSON.parse(tweetData.trackingArray);
-
-            async.eachSeries(trackArray, function(track, callbackB){
-                if( tweetData.tweet.toLowerCase().indexOf(track.toLowerCase())
-                        !== -1 ){
-
-                    self.saveTweet(track, tweetData, callbackB);
-                } else {
-                    callbackB();
-                }
-            }, function(err){
-                if( err ){
-                    callback(err);
-                    return;
-                }
-                // delete row after processing
-                self.knex(self.tableName)
-                    .where('id', '=', tweetData.id)
-                    .delete()
-                    .then(function(){ callback(); })
-                    .catch(callback)
-            })
-        }, callbackIn)
-    }
-
-    self.saveTweet = function(tracking, tweetData, callbackIn){
-        self.knex(self.tableName)
-            .insert({
-                'tracking': tracking,
-                'tweet': tweetData.tweet,
-                'trackingArray': '',
-                created: tweetData.created,
-                parsed: true
-            })
-            .then(function(){ callbackIn(); })
-            .error(callbackIn)
     }
 
     self.streamError = function(error){
